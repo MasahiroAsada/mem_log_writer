@@ -14,6 +14,13 @@
 #define __inline__ inline __attribute__((always_inline))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
+typedef struct MLW_FILE {
+	int fd;
+	char *map;
+	size_t offset;
+	size_t size;
+} MLW_FILE;
+
 static __inline__ size_t
 write_buf(MLW_FILE *f, const void *buf, size_t count)
 {

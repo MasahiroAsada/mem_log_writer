@@ -5,12 +5,7 @@
 #include <stdint.h>
 #include <unistd.h>
 
-typedef struct {
-	int fd;
-	char *map;
-	size_t offset;
-	size_t size;
-} MLW_FILE;
+typedef struct MLW_FILE MLW_FILE;
 
 MLW_FILE *mlw_open(const char *path, size_t max_size);
 ssize_t mlw_write(MLW_FILE *f, const void *buf, size_t count);
