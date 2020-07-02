@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
 #include "mem_log_writer.h"
 
 #define DEFAULT_FILE_SIZE 1000
@@ -16,6 +17,7 @@ int main(int argc, char **argv)
 	const char *file_path;
 	size_t file_size = DEFAULT_FILE_SIZE;
 	unsigned int i = 0;
+	ssize_t res;
 	if (argc < 2) {
 		ERR_EXIT("Usage: %s <output_file> [file_size]\n", argv[0]);
 	}
@@ -27,10 +29,18 @@ int main(int argc, char **argv)
 	if (!f) {
 		ERR_EXIT("Error: Cannot open file %s.\n", file_path);
 	}
+
+	res = mlw_size(f);
+	if (res < 0) {
+		ERR_EXIT("Error: Cannot get file size.\n");
+	}
+	res = mlw_fprintf(f, "File Size is %"PRIu64".\n", res);
+	if (res < 0) {
+		ERR_EXIT("Error: Cannot write data by mlw_fprintf().\n");
+	}
 	while (mlw_available(f) > 0) {
 		const char *str = "Test writing a string\n";
 		const size_t str_len = strlen(str);
-		ssize_t res;
 		res = mlw_write(f, str, str_len);
 		if (res < 0) {
 			ERR_EXIT("Error: Cannot write data by mlw_write().\n");

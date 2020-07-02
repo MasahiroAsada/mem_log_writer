@@ -165,6 +165,19 @@ mlw_available(MLW_FILE *f)
 }
 
 /**
+ * Get the total size of the file.
+ * 
+ * @param f File handle
+ * @return The total size, -1 if an error occurs.
+ */
+ssize_t
+mlw_size(MLW_FILE *f)
+{
+	if (!f) return -1;
+	return f->size;
+}
+
+/**
  * Close the file.
  * 
  * @param f File handle

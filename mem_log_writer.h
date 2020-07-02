@@ -12,6 +12,7 @@ ssize_t mlw_write(MLW_FILE *f, const void *buf, size_t count);
 ssize_t mlw_fputs(MLW_FILE *f, const char *str);
 ssize_t mlw_fprintf(MLW_FILE *f, const char *format, ...);
 ssize_t mlw_available(MLW_FILE *f);
+ssize_t mlw_size(MLW_FILE *f);
 void mlw_close(MLW_FILE *f);
 
 #endif
