@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <inttypes.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -14,48 +15,70 @@
 #define __inline__ inline __attribute__((always_inline))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
+#define TMPFILE_PATH_MAXLEN 32
+#define TMPFILE_PATH_TEMPLATE "/tmp/mlwXXXXXX"
+
 typedef struct MLW_FILE {
-	int fd;
+	FILE *fp_out;
+	char path_map[TMPFILE_PATH_MAXLEN];
+	int fd_map;
 	char *map;
 	size_t offset;
 	size_t size;
+	uint64_t column_length;
+	uint64_t row_length;
+	uint64_t row_remain;
+	const char **index_array;
 } MLW_FILE;
 
-static __inline__ size_t
-write_buf(MLW_FILE *f, const void *buf, size_t count)
+static __inline__ int
+write_buf(MLW_FILE *f, const uint64_t *buf)
 {
-	const size_t n_write = MIN(f->size - f->offset, count);
-	memcpy((void *)(f->map + f->offset), buf, n_write);
-	f->offset += n_write;
-	return (ssize_t)n_write;
+	const size_t nb_write = sizeof(uint64_t) * f->column_length;
+	if (f->row_remain == 0) return -1;
+	memcpy((void *)(f->map + f->offset), buf, nb_write);
+	f->offset += nb_write;
+	f->row_remain--;
+	return 1;
 }
 
 /**
- * Open a memory mapped file.
- * Actual file size is rounded up to the integral multiple of page size.
+ * Create a writer instance.
  * 
  * @param path File path to be written
- * @param max_size Maximum file size
+ * @param column_length Number of column (0 < x< 2^63)
+ * @param row_length Number of row (0 < x < 2^63)
  * @return File handle, NULL if an error occurs.
  */
-MLW_FILE*
-mlw_open(const char *path, size_t max_size)
+MLW_FILE *
+mlw_open(const char *path, uint64_t column_length, uint64_t row_length)
 {
 	MLW_FILE *f = NULL;
 	int page_size;
 
 	if (!path) return NULL;
-	if (max_size == 0u) return NULL;
+	if (column_length == 0) return NULL;
+	if (column_length >= (1ull << 63)) return NULL;
+	if (row_length == 0) return NULL;
+	if (row_length >= (1ull << 63)) return NULL;
 	f = malloc(sizeof(MLW_FILE));
 	if (!f) return NULL;
-	f->offset = 0u;
-	f->size = max_size;
+	f->offset = 0;
+	f->size = sizeof(uint64_t) * column_length * row_length;
+	f->column_length = column_length;
+	f->row_length = row_length;
+	f->row_remain = row_length;
+	f->index_array = NULL;
 
-	f->fd = open(
-		path,
-		O_CREAT | O_RDWR | O_TRUNC,
-		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-	if (f->fd == -1) {
+	f->fp_out = fopen(path, "w");
+	if (!f->fp_out) {
+		free(f);
+		return NULL;
+	}
+
+	strncpy(f->path_map, TMPFILE_PATH_TEMPLATE, sizeof(f->path_map));
+	f->fd_map = mkstemp(f->path_map);
+	if (f->fd_map == -1) {
 		free(f);
 		return NULL;
 	}
@@ -64,14 +87,14 @@ mlw_open(const char *path, size_t max_size)
 	if (f->size % page_size > 0) {
 		f->size = (f->size / page_size + 1) * page_size;
 	}
-	if (ftruncate(f->fd, f->size) == -1) {
+	if (ftruncate(f->fd_map, f->size) == -1) {
 		free(f);
 		return NULL;
 	}
 
-	f->map = (char*)mmap(NULL, f->size, PROT_WRITE, MAP_SHARED, f->fd, 0);
+	f->map = (char*)mmap(NULL, f->size, PROT_WRITE, MAP_SHARED, f->fd_map, 0);
 	if (f->map == MAP_FAILED) {
-		close(f->fd);
+		close(f->fd_map);
 		free(f);
 		return NULL;
 	}
@@ -80,114 +103,112 @@ mlw_open(const char *path, size_t max_size)
 }
 
 /**
- * Write binary data to the file.
+ * Get the number of column of the file.
  * 
  * @param f File handle
- * @param buf Data to be written
- * @param count Data size
- * @return Data size actually written, -1 if an error occurs.
+ * @return The number of column, -1 if an error occurs.
  */
-ssize_t mlw_write(MLW_FILE *f, const void *buf, size_t count)
+int64_t
+mlw_column_length(MLW_FILE *f)
 {
 	if (!f) return -1;
-	if (!buf) return -1;
-
-	return write_buf(f, buf, count);
+	return (int64_t)f->column_length;
 }
 
 /**
- * Write a string to the file.
- * Newline code is not outputted automatically.
+ * Get the number of row of the file.
  * 
  * @param f File handle
- * @param str String to be written
- * @return Data size actually written, -1 if an error occurs.
+ * @return The number of row, -1 if an error occurs.
  */
-ssize_t mlw_fputs(MLW_FILE *f, const char *str)
+int64_t
+mlw_row_length(MLW_FILE *f)
 {
 	if (!f) return -1;
-	if (!str) return -1;
-
-	return write_buf(f, str, strlen(str));
+	return (int64_t)f->row_length;
 }
 
 /**
- * Write a string with a format to the file.
+ * Write data array to the buffer.
  * 
  * @param f File handle
- * @param format String format, its specification follows printf() series.
- * @return Data size actually written, -1 if an error occurs.
+ * @param data_array Data array to be written
+ * @return 0 if data are successfully written, -1 if an error occurs.
  */
-ssize_t mlw_fprintf(MLW_FILE *f, const char *format, ...)
+int
+mlw_write(MLW_FILE *f, const uint64_t *data_array)
 {
-	int size = 0;
-	char *p = NULL;
-	va_list ap;
-	size_t ret;
 	if (!f) return -1;
-	if (!format) return -1;
-	
-	va_start(ap, format);
-	size = vsnprintf(p, size, format, ap);
-	va_end(ap);
-	if (size < 0) {
-		return -1;
-	}
-	size++;  /* For '\0' */
-	p = malloc(size);
-	if (!p) {
-		return -1;
-	}
-	va_start(ap, format);
-	size = vsnprintf(p, size, format, ap);
-	va_end(ap);
-	if (size < 0) {
-		free(p);
-		return -1;
-	}
+	if (!data_array) return -1;
 
-	ret = write_buf(f, p, size);
-	free(p);
-	return ret;
+	return write_buf(f, data_array);
 }
 
 /**
- * Get the remaining data size which can be written.
+ * Get the number of remaining row which can be written.
  * 
  * @param f File handle
- * @return The remaining size, -1 if an error occurs.
+ * @return The number of remaining row, -1 if an error occurs.
  */
-ssize_t
+int64_t
 mlw_available(MLW_FILE *f)
 {
 	if (!f) return -1;
-	return f->size - f->offset;
+	return f->row_remain;
 }
 
 /**
- * Get the total size of the file.
+ * Set the index array.
  * 
  * @param f File handle
- * @return The total size, -1 if an error occurs.
+ * @param index_array Index array, the number of index must be equal to column_length
+ * @return 0 if successfully set, -1 if an error occurs.
  */
-ssize_t
-mlw_size(MLW_FILE *f)
+int
+mlw_set_index(MLW_FILE *f, const char **index_array)
 {
 	if (!f) return -1;
-	return f->size;
+	if (!index_array) return -1;
+	f->index_array = index_array;
+	return 0;
 }
 
 /**
- * Close the file.
+ * Flush buffer and close the file.
  * 
  * @param f File handle
+ * @return 0 if data are successfully written, -1 if an error occurs.
  */
-void
+int
 mlw_close(MLW_FILE *f)
 {
-	ftruncate(f->fd, f->offset);
-	msync(f->map, f->offset, MS_SYNC);
-	munmap(f->map, f->offset);
-	close(f->fd);
+	const char DELIM[] = ",";
+	uint64_t n_write;
+
+	if (!f) return -1;
+
+	/* flush */
+	if (f->index_array) {
+		for (int64_t i = 0; i < f->column_length; i++) {
+			const char *name = f->index_array[i];
+			fprintf(f->fp_out, "%s%s",
+				name, (i < f->column_length - 1) ? DELIM : "");
+		}
+		fputc('\n', f->fp_out);
+	}
+	n_write = f->row_length - f->row_remain;
+	for (uint64_t i = 0; i < n_write; i++) {
+		const uint64_t *buf = &((uint64_t *)f->map)[f->column_length * i];
+		for (uint64_t j = 0; j < f->column_length; j++) {
+			fprintf(f->fp_out, "%"PRIu64"%s",
+				buf[j], (j < f->column_length - 1) ? DELIM : "");
+		}
+		fputc('\n', f->fp_out);
+	}
+
+	fclose(f->fp_out);
+	close(f->fd_map);
+	unlink(f->path_map);
 	free(f);
+	return 0;
 }
